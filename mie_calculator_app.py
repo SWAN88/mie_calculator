@@ -115,7 +115,7 @@ with st.expander("Advanced settings"):
         and the number of iterations in mie calculation.
     """)
     # the wavelength range
-    wavelength_start = st.number_input('Input the starting wavelength range', value=50, step=1)
+    wavelength_start = st.number_input('Input the starting wavelength range', value=200, step=1)
     st.write(f'The current start is {wavelength_start} nm')
 
     wavelength_end = st.number_input('Input the end of wavelength range', value=1200, step=1)
