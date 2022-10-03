@@ -3,3 +3,6 @@ pandas
 scipy
 matplotlib
 streamlit
+tqdm
+bokeh
+plotly
