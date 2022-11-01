@@ -3,11 +3,15 @@ import numpy as np
 import streamlit as st
 import time
 import matplotlib.pyplot as plt
+import mpl_toolkits.mplot3d.axes3d as axes3d
+import plotly.express as px
+import plotly.graph_objects as go
+from matplotlib import cm
 from tqdm import tqdm
 from cmath import pi
 from scipy.special import *
 from bokeh.plotting import figure
-import plotly.express as px
+from scipy.special import spherical_jn, spherical_yn
 
 """
 
@@ -26,77 +30,103 @@ You can see the calculation results of the extinction, absorption and scattering
 A csv file of the data can be downloaded at the end.
 
 """
-def plot_epslion_func(wavelength, eps):
-    fig, ax = plt.subplots()
-    ax.plot(wavelength[0] * 1e9, eps.real.T, label='Real', linewidth=2)
-    ax.plot(wavelength[0] * 1e9, eps.imag.T, label='Imaginary', linewidth=2)
-    ax.legend(fontsize=15)
-    ax.set_xlabel('Wavelength (nm)', fontsize=20)
-    ax.set_ylabel('Refractive index', fontsize=20)
-    st.pyplot(fig)
+# define the a_n and b_n coefficients in Yigao's way
+def spherical_hn(n, z):
+    return spherical_jn(n, z) + 1j*spherical_yn(n, z)
 
 
-def calc_epsilon(eps_inf, wb, tau):
-    eps = eps_inf - wb ** 2 / (w * (w + 1j * tau))
-    n = np.sqrt(eps)
-    wavelength_out = np.sqrt(2 + eps_inf) * 2 * pi * 3e8 / wb
-    return eps, n, wavelength_out
+def a_n(m, n, x):
+    miu = 1
+    a1 = m**2*spherical_jn(n, m*x)*(x*spherical_jn(n-1, x)-n*spherical_jn(n, x))
+    a2 = miu*spherical_jn(n, x)*(m*x*spherical_jn(n-1, m*x) -n*spherical_jn(n, m*x))
+    a3 = m**2*spherical_jn(n, m*x)*(x*spherical_hn(n-1, x)-n*spherical_hn(n, x))
+    a4 = miu*spherical_hn(n, x)*(m*x*spherical_jn(n-1, m*x) -n*spherical_jn(n, m*x))
+    return (a1-a2)/(a3-a4)
 
 
-def mie_calculation(n, n_medium, k, radius, n_max):
-    m = n / n_medium
-    x = k * radius  # the size parameter
-    C_sca = 0
-    C_ext = 0
-    C_sca_old = 0
-    C_ext_old = 0
-    er_ext = np.zeros((n_max + 1))
-    er_sca = np.zeros((n_max + 1))
+def b_n(m, n, x):
+    miu = 1
+    b1 = miu*spherical_jn(n, m*x)*(x*spherical_jn(n-1, x)-n*spherical_jn(n, x))
+    b2 = spherical_jn(n, x)*(m*x*spherical_jn(n-1, m*x) -n*spherical_jn(n, m*x))
+    b3 = miu*spherical_jn(n, m*x)*(x*spherical_hn(n-1,x)-n*spherical_hn(n, x))
+    b4 = spherical_hn(n, x)*(m*x*spherical_jn(n-1, m*x) -n*spherical_jn(n, m*x))
+    return (b1-b2)/(b3-b4)
 
-    for it in range(n_max):
-        # Spherical bessel functions of the first kind of x
-        s_bes_jx = spherical_jn(it + 1, x)
-        s_bes_jx_old = spherical_jn(it, x)
-        # Spherical bessel functions of the first kind of mx
-        s_bes_jmx = spherical_jn(it + 1, m * x)
-        s_bes_jmx_old = spherical_jn(it, m * x)
-        # Spherical bessel functions of the third kind
-        s_bes_hx = spherical_jn(it + 1, x) + 1j * spherical_yn(it + 1, x)
-        s_bes_hx_old = spherical_jn(it, x) + 1j * spherical_yn(it, x)
 
-        # The derivatives of each spherical bessel function
-        xj_prime = x * s_bes_jx_old - (it + 1) * s_bes_jx
-        mxj_prime = m * x * s_bes_jmx_old - (it + 1) * s_bes_jmx
-        xh_prime = x * s_bes_hx_old - (it + 1) * s_bes_hx
+def mie(m, x, n_max, radius):
+    c_0 = 2*pi / (x/radius)**2
+    c_sca = 0 # np.zeros([n_max])
+    c_ext = 0 # np.zeros([n_max])
+    for i in range(1, n_max+1):
+        a_i = a_n(m, i, x)
+        b_i = b_n(m, i, x)
+        c_sca += c_0*(2*i+1)*(np.absolute(a_i)**2+np.absolute(b_i)**2)
+        c_ext += c_0*(2*i+1)*np.real(a_i+b_i)
+    return c_sca, c_ext
 
-        # Mie scattering coefficients
-        an = (m ** 2 * s_bes_jmx * xj_prime - s_bes_jx * mxj_prime) / (m ** 2 * s_bes_jmx * xh_prime - s_bes_hx * mxj_prime)
-        bn = (s_bes_jmx * xj_prime - s_bes_jx * mxj_prime) / (s_bes_jmx * xh_prime - s_bes_hx * mxj_prime)
-        # cn = (s_bes_jx * xh_prime - s_bes_hx * xj_prime) / (s_bes_jmx * xh_prime - s_bes_hx * mxj_prime)
-        # dn = (m * s_bes_jx * xh_prime - m_ag * s_bes_hx * xj_prime) / (m ** 2 * s_bes_jmx * xh_prime - s_bes_hx * mxj_prime)
 
-        # Cross section calculations
-        C_sca = C_sca + (2 * (it + 1) + 1) * (np.abs(an) ** 2 + np.abs(bn) ** 2) * 2 * pi / k ** 2
-        C_ext = C_ext + (2 * (it + 1) + 1) * (an + bn).real * 2 * pi / k ** 2
+def func_pin(n, cth):
+    if (n<0) or (n != int(n)): 
+        print('n must be positive integer') 
+        return -1
+    elif n==0: return 0
+    elif n==1: return 1
+    else: 
+        return (2*n-1)/(n-1)*cth*func_pin(n-1,cth) - n/(n-1)*func_pin(n-2,cth)
 
-        # errors
-        er_sca[it] = np.sum(np.sum(np.abs(C_sca - C_sca_old) ** 2 / np.abs(C_sca) ** 2))
-        er_ext[it] = np.sum(np.sum(np.abs(C_ext - C_ext_old) ** 2 / np.abs(C_ext) ** 2))
+    
+def func_taon(n, cth):
+    if (n<0) or (n != int(n)): 
+        print('n must be positive integer') 
+        return -1
+    elif n==0: return 0
+    elif n==1: return cth
+    else: 
+        return n*cth*func_pin(n,cth) - (n+1)*func_pin(n-1,cth)        
 
-        C_ext_old = C_ext
-        C_sca_old = C_sca
+    
+def M_3oln(r, theta, phi, m, k, n):
+    cth = np.cos(theta)
+    z = r*m*k  # m==1 , z is unitless.
+    M1 = 0 #np.zeros(len(x))
+    M2 = np.cos(phi)*func_pin(n, cth)*spherical_hn(n, z)
+    M3 = -np.sin(phi)*func_taon(n, cth)*spherical_hn(n, z)
+    return M1, M2, M3
 
-    # Calculating C_abs
-    C_abs = C_ext - C_sca
 
-    return C_sca, C_abs, C_ext, er_sca, er_ext
+def N_3eln(r, theta, phi, m, k, n):
+    cth = np.cos(theta)
+    z = r*m*k
+    N1 = n*(n+1)*np.cos(phi)*np.sin(theta)*func_pin(n,cth)*spherical_hn(n,z)/z
+    N2 = np.cos(phi)*func_taon(n, cth)*(z*spherical_hn(n-1, z) - n*spherical_hn(n, z))/z
+    N3 = -np.sin(phi)*func_pin(n, cth)*(z*spherical_hn(n-1, z) - n*spherical_hn(n, z))/z
+    return N1, N2, N3
+
+
+def calc_efield(r, theta, phi, m, x, n_max):  #define Ei and then sum all the i # use peter's formula.
+    esum1 = 0
+    esum2 = 0
+    esum3 = 0
+    for n in range(1, n_max+1):
+        a_i = a_n(m, n, x)      # unitless
+        b_i = b_n(m, n, x)
+        [M1, M2, M3] = M_3oln(r, theta, phi, 1, x/radius_input, n)  # unitless
+        [N1, N2, N3] = N_3eln(r, theta, phi, 1, x/radius_input, n)
+        f_n = (1j)**n*(2*n+1)/(n*(n+1))    # unitless. 
+        E_i1 = f_n*(1j*a_i*N1 - b_i*M1)
+        E_i2 = f_n*(1j*a_i*N2 - b_i*M2)
+        E_i3 = f_n*(1j*a_i*N3 - b_i*M3)
+        esum1 += E_i1
+        esum2 += E_i2
+        esum3 += E_i3
+    return np.linalg.norm([esum1, esum2, esum3])
 
 st.header('Material Propeties')
 
 # a material to be chosen 
 material = st.selectbox(
     'What material do you want to calculate?',
-    ('Gold', 'Silver', 'Aluminum'))
+    ('Ag(Drude)', 'Al(Drude)'))
 st.write(f'You selected: {material}')
 
 #TODO add more materials such as Cupper and Platinum
@@ -109,79 +139,24 @@ st.write(f'The current radius is {radius_input} nm')
 n_medium = st.number_input('Input the refractive index of the surrounding medium', value=1.00)
 st.write(f'The current refractive index of the surrounding medium is {n_medium}')
 
-with st.expander("Advanced settings"):
-    st.write("""
-        Here, you can additionally set the the starting and ending wavelengths of the spectral range to be calculated, 
-        and the number of iterations in mie calculation.
-    """)
-    # the wavelength range
-    wavelength_start = st.number_input('Input the starting wavelength range', value=200, step=1)
-    st.write(f'The current start is {wavelength_start} nm')
-
-    wavelength_end = st.number_input('Input the end of wavelength range', value=1200, step=1)
-    st.write(f'The current end is {wavelength_end} nm')
-
-    # the number of iteratipns
-    n_max = st.number_input('Input the number of iteration', value=30, step=1)
-    n_max = int(n_max)
-    st.write(f'The current number of iteration is {n_max}')
-
-# make sparse output arrays
-wavelength_range = np.array(range(int(wavelength_start), int(wavelength_end), 1)) * 1e-9
-wavelength, radius = np.meshgrid(wavelength_range, radius_input * 1e-9)
-
-# constants
-eV = 6.582e-16  # hbar (eV*s)
-k = 2 * pi / wavelength  # wavenumber
-w = 3e8 * k  # frequency
-
-# parameters
-
-if material=='Gold':  # Au dielectric function 
-    eps_inf = 9.5  # dielectric function at infinite frequency
-    wb = 8.9 / eV  # plasma frequency w_p 8.9488
-    tau = 0.07 / eV  # relaxation time delta 0.06909
-    eps, n, _ = calc_epsilon(eps_inf, wb, tau)
-    reference = '''Oubre C, Nordlander P. 
-    Optical properties of metallodielectric nanostructures calculated using the finite difference time domain method. 
-    J Phys Chem B. 2004;108:17740–17747 [doi link](https://doi.org/10.1021/jp0473164)
-    '''
-
-elif material=='Silver':  # Ag dielectric function 
-    eps_inf = 5  # dielectric function at infinite frequency
-    wb = 9.5 / eV
-    tau = 0.1 / eV  # relaxation time 0.0987
-    eps, n, _ = calc_epsilon(eps_inf, wb, tau)
-    reference = '''Oubre C, Nordlander P. 
-    Optical properties of metallodielectric nanostructures calculated using the finite difference time domain method. 
-    J Phys Chem B. 2004;108:17740–17747 [doi link](https://doi.org/10.1021/jp0473164)
-    '''
-
-elif material=='Aluminum':  # Al dielectric function 
-    eps_inf = 1.25  # dielectric function at infinite frequency
-    wb = 15.8 / eV
-    tau = 0.2 / eV  # relaxation time
-    eps, n, _ = calc_epsilon(eps_inf, wb, tau)
-
-# plot dielectric function
-plot_epsilon = st.checkbox('Plot the dielectric function')
-
-if plot_epsilon:
-    st.write(f"These dielectric values of {material} are taken from '{reference}'")
-
-    plot_epslion_func(wavelength, eps)
-
 st.header('Mie Calculation Result')
 
-# mie calculations
-C_sca, C_abs, C_ext, er_sca, er_ext = mie_calculation(n, n_medium, k, radius, n_max)
+n_max = 10
+eps_inf = 5
+w_p = 9.5
+gamma = 0.1
 
-# calculation results into dataframe
-wavelength_df = pd.DataFrame(wavelength[0]*1e9, columns=['wavelength'])
-C_sca_df = pd.DataFrame(C_sca[0], columns=['Csca'])
-C_abs_df = pd.DataFrame(C_abs[0], columns=['Cabs'])
-C_ext_df = pd.DataFrame(C_ext[0], columns=['Cext'])
-calc_results_df = pd.concat([wavelength_df, C_sca_df, C_abs_df, C_ext_df], axis=1)
+wavelength = np.linspace(200, 800, 100)
+omega = 1240 / wavelength
+eps = eps_inf - w_p ** 2 / (omega * (omega + 1j * gamma))
+n = np.sqrt(eps)
+m = n / n_medium
+x = 2 * pi / wavelength * radius_input
+
+# mie calculation
+c_sca, c_ext = mie(m, x, n_max, radius_input)
+c_abs = c_ext - c_sca
+calc_results_df = pd.DataFrame({'wavelength': wavelength, 'Cext': c_ext, 'Csca': c_sca, 'Cabs': c_abs})
 
 # plot results in plotly
 fig = px.line(calc_results_df, x='wavelength', y=calc_results_df.columns[0:4], 
@@ -190,73 +165,59 @@ fig = px.line(calc_results_df, x='wavelength', y=calc_results_df.columns[0:4],
                     "value": "Cross-sections (nm^2)",
                     "wavelength": "Wavelength (nm)"}, 
                 color_discrete_sequence=['red', 'blue', 'green'],
-                title=f'{material}, Radius: {radius_input} nm, Refractive index of medium: {n_medium}')
+                title=f'{material}, Radius: {radius_input} nm, Refractive index of medium: {n_medium}'
+                )
 st.plotly_chart(fig, use_container_width=True)
 
-# st.subheader('Bokeh')
-# # plot results in Bokeh
-# p = figure(
-#     title=f'{option}, Radius: {radius_input} nm, Refractive index of medium: {n_medium}',
-#     x_axis_label='Wavelength (nm)',
-#     y_axis_label='Cross section (nm^2)')
+# e-field plot
+wavelength_efield = st.number_input('Input Wavelength (nm)', 600)
+omega_efield = 1240 / wavelength_efield
+eps = eps_inf - w_p ** 2 / (omega_efield * (omega_efield + 1j * gamma))
+n = np.sqrt(eps)
+m = n / n_medium
+x = 2 * pi / wavelength_efield * radius_input
 
-# p.line(calc_results_df['wavelength'], calc_results_df['Csca'], legend_label='Csca', line_color='red', line_width=2)
-# p.line(calc_results_df['wavelength'], calc_results_df['Cabs'], legend_label='Cabs', line_color='blue', line_width=2)
-# p.line(calc_results_df['wavelength'], calc_results_df['Cext'], legend_label='Cext', line_color='green', line_width=2)
-# st.bokeh_chart(p, use_container_width=True)
+polar_p = np.linspace(0, 2*pi, 100)   # nm
+polar_t = np.linspace(0, pi, 50)   # nm
+pphi, ptheta = np.meshgrid(polar_p, polar_t)
 
-# st.subheader('Matplotlib')
-# # plot results in matplotlib
-# fig, ax = plt.subplots()
-# ax.plot(calc_results_df['wavelength'], calc_results_df['Csca'], label='Csca', c='r')
-# ax.plot(calc_results_df['wavelength'], calc_results_df['Cabs'], label='Cabs', c='b')
-# ax.plot(calc_results_df['wavelength'], calc_results_df['Cext'], label='Cext', c='g')
-# ax.set_title(f'{option}, Radius: {radius_input} nm, Refractive index of medium: {n_medium}')
-# ax.legend(fontsize=15)
-# ax.set_xlabel('Wavelength (nm)', fontsize=20)
-# ax.set_ylabel('$Cross-section (nm^2)$', fontsize=20)
-# st.pyplot(fig)
+zz = np.zeros([len(polar_t), len(polar_p)])
+for i in range(len(polar_p)):
+    phi = polar_p[i]
+    for j in range(len(polar_t)):
+        theta = polar_t[j]
+        zz[j, i] = calc_efield(radius_input, theta, phi, m, x, n_max)
 
-# plot error calculations
-plot_errors = st.checkbox('Plot error calculations')
+X = radius_input * np.sin(ptheta) * np.cos(pphi)
+Y = radius_input * np.sin(ptheta) * np.sin(pphi)
+Z = radius_input * np.cos(ptheta)
 
-if plot_errors:
-    fig, ax = plt.subplots()
-    ax.plot(range(n_max + 1), er_sca[:], label='Csca', c='r')
-    ax.plot(range(n_max + 1), er_ext[:], label='Cext', c='g')
-    ax.set_title(f'Number of iterations: {n_max}')
-    ax.legend(fontsize=15)
-    ax.set_xlabel('Number of iterations', fontsize=20)
-    ax.set_ylabel('Errors', fontsize=20)
-    st.pyplot(fig)
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(1, 1, 1, projection='3d')
+plot = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap=plt.get_cmap('jet'), facecolors=cm.jet(zz/np.max(zz)), linewidth=0, antialiased=False, alpha=0.5)
+m = cm.ScalarMappable(cmap=cm.jet)
+m.set_array(zz)
+plt.colorbar(m)
+plt.title(f'Field Enhancement of {material}(r={radius_input}nm) at {wavelength_efield} nm')
+st.pyplot(fig)
 
-@st.cache
-def convert_df(df):
-    # IMPORTANT: Cache the conversion to prevent computation on every rerun
-    return df.to_csv().encode('utf-8')
+# plot results in plotly
+# fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
+# fig.update_layout(title=f'Field Enhancement of {material}(r={radius_input}nm) at {wavelength_efield} nm', autosize=False,
+#                   width=500, height=500,
+#                   margin=dict(l=65, r=50, b=65, t=90))
+# st.plotly_chart(fig, use_container_width=True)
 
-csv = convert_df(calc_results_df)
+# @st.cache
+# def convert_df(df):
+#     # IMPORTANT: Cache the conversion to prevent computation on every rerun
+#     return df.to_csv().encode('utf-8')
 
-st.download_button(
-    label="Download data as CSV",
-    data=csv,
-    file_name='mie_calulation_results.csv',
-    mime='text/csv',
-)
+# csv = convert_df(calc_results_df)
 
-# write theory in dielectric functions
-# st.subheader("Constants :globe_with_meridians:")
-
-# st.latex(r'''
-# h = 4.1357 \times 10^{-15} \space (eV \cdot s), 
-# c = 2.9979 \times 10^{17} \space (nm/s),
-# hc = 1239.8415 \space (eV \cdot nm),
-# ''')
-
-# st.subheader("Dielectric functions :black_nib:")
-
-# st.latex(r'''
-# E (eV) = \frac{hc}{\lambda (nm)},
-# \nu (THz)= \frac{c}{\lambda (nm)} \times 10^{15},
-# T(fs) = \frac{1}{\nu(THz)} \times 10^{3}
-# ''')
+# st.download_button(
+#     label="Download data as CSV",
+#     data=csv,
+#     file_name='mie_calulation_results.csv',
+#     mime='text/csv',
+# )
